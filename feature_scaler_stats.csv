@@ -1,4 +1,4 @@
-,min,max
+feature,min,max
 month_sin,-1.0,1.0
 month_cos,-1.0,1.0
 year,2018.0,2022.0
