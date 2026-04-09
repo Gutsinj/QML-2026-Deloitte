@@ -1,0 +1,595 @@
+\documentclass[11pt,a4paper]{article}
+
+% ── Packages ──────────────────────────────────────────────────────────────────
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{parskip}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!70!black,
+    urlcolor=blue!70!black,
+    citecolor=blue!70!black
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{2026 Quantum Sustainability Challenge}
+\lhead{Wildfire Risk \& Insurance Premium Modeling}
+\rfoot{Page \thepage}
+
+% ── Title ─────────────────────────────────────────────────────────────────────
+\title{
+    \vspace{-1cm}
+    \LARGE\textbf{Wildfire Risk and Insurance Premium Modeling} \\[0.4em]
+    \large 2026 Quantum Sustainability Challenge Submission
+}
+\author{
+    \textbf{[YOUR NAME(S)]} \\
+    Team: [TEAM NAME] \\
+    [UNIVERSITY / AFFILIATION] \\
+    \texttt{[EMAIL ADDRESS]}
+}
+\date{}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\begin{document}
+\maketitle
+\thispagestyle{fancy}
+
+% ── Abstract (max 400 words) ──────────────────────────────────────────────────
+\begin{abstract}
+\noindent
+We present a hybrid Quantum Machine Learning (QML) framework for wildfire risk
+modeling across California ZIP codes, addressing both Task~1 (fire risk prediction
+for 2023) and Task~2 (insurance premium forecasting). Using historical wildfire
+and climate data spanning 2018--2022 across 2,593 California ZIP codes,
+we formulate wildfire prediction as a zero-inflated count regression problem:
+the expected number of fires per ZIP code per month.
+
+For Task~1A, we implement a Variational Quantum Circuit (VQC) with 9~qubits
+using angle encoding and data re-uploading. Nine carefully engineered features
+capture the primary drivers of California wildfire risk: temperature, precipitation,
+dryness accumulation, seasonality, and geography. The model is trained to predict
+$\log(1 + n_{\text{fires}})$ and outputs a continuous monthly fire risk score per ZIP
+code, which is aggregated into an annual risk score by summing across months.
+
+For Task~1B, we benchmark the QML approach against five classical models
+(Dummy, Ridge, Random Forest, Gradient Boosting, and XGBoost) using a strict
+temporal train/validate/test split (2018--2020 / 2021 / 2022). The best
+classical model, Gradient Boosting, achieves an AUC-ROC of 0.873 on the
+held-out 2022 test set and correctly ranks fire-prone ZIP-month pairs 87\%
+of the time. The QML model is evaluated on the same split and metrics for
+a direct comparison.
+
+For Task~2, annual fire risk scores from our model are used as inputs to a
+time series insurance premium model predicting 2021 premiums from 2018--2020
+historical data.
+
+Our data pipeline, feature engineering, and complete model code are
+available at: \href{https://github.com/[YOUR-REPO]}{github.com/[YOUR-REPO]}.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Data Description and Preprocessing}
+\label{sec:data}
+
+\subsection{Source Dataset}
+The provided wildfire dataset contains monthly records for California ZIP codes
+covering the period 2017--2023. Each record includes climate variables
+(daily maximum and minimum temperature, total precipitation), a derived dryness
+index, and binary fire occurrence flags with counts of wildfire events.
+The dataset was provided as \texttt{cleaned\_data\_sorted.csv}.
+
+\subsection{Data Cleaning}
+The following preprocessing steps were applied, implemented in \texttt{clean\_data.py}:
+
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{Year filtering.} Records were filtered to the training window
+          2018--2022, yielding 125,164 rows before gap-filling.
+
+    \item \textbf{Deduplication.} The raw data contained 444 duplicate
+          ZIP$\times$year$\times$month entries arising from two sources:
+          (i)~the same fire event geo-coded to multiple coordinate points within
+          the same ZIP, and (ii)~separate rows for weather data and fire event
+          data for the same period. These were resolved by keeping the
+          weather-valid row, setting \texttt{has\_fire}~=~1 if any row in the
+          group indicated a fire, and summing fire counts into \texttt{num\_fires}.
+
+    \item \textbf{Complete panel construction.} A full panel of
+          $2{,}593\ \text{ZIP codes} \times 5\ \text{years} \times 12\ \text{months}
+          = 155{,}580$ rows was constructed. ZIP$\times$year$\times$month
+          combinations absent from the raw data were inserted with
+          \texttt{has\_fire}~=~0 and \texttt{num\_fires}~=~0 (no fire assumed).
+
+    \item \textbf{Temperature imputation.} Missing values in
+          \texttt{avg\_tmax\_c} (31,158 rows) and \texttt{avg\_tmin\_c} (31,158
+          rows) were filled using the mean for that ZIP$\times$month combination
+          across the available years. \texttt{temp\_mean} and
+          \texttt{temp\_range} were recomputed from the filled values.
+
+    \item \textbf{Precipitation imputation.} All 31,116 missing
+          \texttt{tot\_prcp\_mm} values (entirely in 2022) were filled using
+          the ZIP$\times$month historical mean across 2018--2021.
+
+    \item \textbf{Dryness index imputation.} Missing \texttt{dryness\_index}
+          values (30,860 rows) were recomputed using the formula
+          \begin{equation}
+              \text{dryness\_index} = \frac{T_{\max}}{P + 1}
+              \label{eq:dryness}
+          \end{equation}
+          where $T_{\max}$ is \texttt{avg\_tmax\_c} and $P$ is
+          \texttt{tot\_prcp\_mm}. The $+1$ smoothing term prevents division
+          by zero and recovers $T_{\max}$ as the dryness measure when there
+          is no precipitation, consistent with all observed values in the data.
+
+    \item \textbf{Geocoding.} Latitude and longitude were populated for all
+          2,593 ZIP codes using the \texttt{pgeocode} library, replacing the
+          largely missing coordinate columns in the raw data.
+\end{enumerate}
+
+The cleaned dataset (\texttt{cleaned\_data\_final.csv}) contains 155,580 rows
+across 14 columns with no missing values in any feature used for modeling.
+
+\subsection{Class Distribution}
+\label{sec:imbalance}
+
+The dataset is severely zero-inflated. Of the 155,580 ZIP-month observations,
+153,962 (99.0\%) have \texttt{num\_fires}~=~0. Only 1,618 observations (1.0\%)
+record at least one fire. Among fire observations, the distribution of
+\texttt{num\_fires} is:
+
+\begin{table}[H]
+\centering
+\caption{Distribution of \texttt{num\_fires} across all ZIP-month observations.}
+\begin{tabular}{rr}
+\toprule
+\textbf{num\_fires} & \textbf{Rows} \\
+\midrule
+0 & 153,962 \\
+1 & 1,404 \\
+2 & 165 \\
+3 & 33 \\
+4 & 9 \\
+5 & 5 \\
+6 & 2 \\
+\midrule
+\textbf{Total} & \textbf{155,580} \\
+\bottomrule
+\end{tabular}
+\label{tab:fire_dist}
+\end{table}
+
+This imbalance is the central challenge of the modeling task and motivates both
+the choice of AUC-ROC as the primary evaluation metric and the use of
+sample-weighted training.
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Feature Engineering}
+\label{sec:features}
+
+Nine features were selected and engineered to capture the primary physical
+drivers of California wildfire risk while remaining within a circuit budget
+of 9 qubits for the QML model. Redundant features were excluded:
+\texttt{temp\_mean} was dropped because it is an exact linear combination of
+\texttt{avg\_tmax\_c} and \texttt{avg\_tmin\_c}; \texttt{dryness\_index}
+was dropped because it is fully determined by \texttt{avg\_tmax\_c} and
+\texttt{tot\_prcp\_mm} via Equation~\eqref{eq:dryness}, and the QML
+circuit can learn this interaction through entangling gates.
+
+\subsection{Feature Definitions}
+
+\begin{table}[H]
+\centering
+\caption{Final feature set and rationale.}
+\begin{tabular}{lll}
+\toprule
+\textbf{Feature} & \textbf{Source} & \textbf{Rationale} \\
+\midrule
+\texttt{month\_sin} & $\sin(2\pi m/12)$ & \multirow{2}{*}{Cyclical month encoding — December and January are adjacent} \\
+\texttt{month\_cos} & $\cos(2\pi m/12)$ & \\
+\texttt{year} & raw & Linear climate trend (2018$\to$2022) \\
+\texttt{avg\_tmax\_c} & raw & Primary heat driver of fire risk \\
+\texttt{temp\_range} & $T_{\max} - T_{\min}$ & Diurnal range; proxy for continental/dry conditions \\
+\texttt{tot\_prcp\_mm} & raw & Monthly precipitation; moisture suppressant \\
+\texttt{dryness\_3m\_avg} & 3-month rolling mean & Drought accumulation; captures hydroclimate whiplash \\
+\texttt{latitude} & geocoded & North--South geographic fire zone \\
+\texttt{longitude} & geocoded & Coastal--inland gradient \\
+\bottomrule
+\end{tabular}
+\label{tab:features}
+\end{table}
+
+The 3-month rolling dryness feature (\texttt{dryness\_3m\_avg}) is the most
+important engineered feature. A single dry month presents limited fire risk;
+the compounding effect of multiple consecutive dry and hot months --- described
+in the challenge statement as ``hydroclimate whiplash'' --- is the physical
+mechanism that \texttt{dryness\_3m\_avg} is designed to capture.
+
+\subsection{Target Variable}
+
+The target variable is the expected number of fires per ZIP-month:
+\begin{equation}
+    y = \log(1 + n_{\text{fires}})
+    \label{eq:target}
+\end{equation}
+The log-transform stabilizes the heavily right-skewed distribution and
+bounds the training signal. Predictions are inverted at inference time via
+$\hat{n} = e^{\hat{y}} - 1$, clipped to $[0, \infty)$.
+
+\subsection{Normalization}
+
+All features are min-max normalized to $[0, 1]$ using statistics computed
+exclusively on the training split (2018--2020) to prevent data leakage:
+\begin{equation}
+    x_{\text{norm}} = \frac{x - x_{\min}^{\text{train}}}{x_{\max}^{\text{train}} - x_{\min}^{\text{train}}}
+\end{equation}
+Values at inference time are clipped to $[0, 1]$. This normalization is
+required for angle encoding in the quantum circuit, where each feature
+is mapped to a rotation angle $\theta = \pi x_{\text{norm}} \in [0, \pi]$.
+Scaler statistics are stored in \texttt{feature\_scaler\_stats.csv}.
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Task 1A: Quantum Machine Learning Model}
+\label{sec:qml}
+
+\subsection{Motivation}
+The challenge statement notes that ``the high degree of interconnectedness of
+wildfire risk variables complicates relationships between features, which shows
+promise for improvement through applying QML.'' Climate variables such as
+temperature, precipitation, and dryness interact non-linearly and exhibit
+geographic dependencies that may benefit from the expressive power of
+quantum feature maps in high-dimensional Hilbert space.
+
+\subsection{Circuit Architecture}
+
+We implement a \textbf{Variational Quantum Circuit (VQC)} with 9 qubits
+using PennyLane. The circuit consists of $L$ re-uploading layers, each
+composed of three components:
+
+\paragraph{Angle encoding.}
+Each of the 9 normalized features is encoded as a single-qubit $R_y$ rotation:
+\begin{equation}
+    R_y(\pi x_i) = \begin{pmatrix} \cos(\pi x_i / 2) & -\sin(\pi x_i / 2) \\
+    \sin(\pi x_i / 2) & \cos(\pi x_i / 2) \end{pmatrix}
+\end{equation}
+This maps each feature to a point on the Bloch sphere equator, placing all
+inputs in the same rotation manifold.
+
+\paragraph{Entangling layer.}
+A ring of CNOT gates creates pairwise entanglement between adjacent qubits,
+enabling the circuit to learn correlations between features (e.g.,
+the joint signal from temperature and dryness):
+\[
+    \text{CNOT}(q_0, q_1),\ \text{CNOT}(q_1, q_2),\ \ldots,\ \text{CNOT}(q_8, q_0)
+\]
+
+\paragraph{Trainable rotation layer.}
+Parameterized $R_y$ and $R_z$ rotations on each qubit provide the
+trainable degrees of freedom:
+\[
+    R_z(\phi_i^{(l)}) R_y(\theta_i^{(l)}),\quad i = 0, \ldots, 8,\quad l = 1, \ldots, L
+\]
+
+\paragraph{Data re-uploading.}
+The encoding-entangling-rotation sequence is repeated $L$ times, with the
+same input data re-injected at each layer but with fresh trainable parameters.
+This is analogous to depth in a classical neural network: a single encoding
+layer can only represent linear functions of the features, while $L$
+re-uploading layers enable the circuit to represent non-linear decision
+boundaries~\cite{perez2020reup}.
+
+\paragraph{Measurement.}
+The expectation value $\langle Z_0 \rangle \in [-1, 1]$ is measured on qubit~0
+and mapped to a non-negative prediction via a trainable affine output layer.
+
+\subsection{Training Configuration}
+
+\begin{table}[H]
+\centering
+\caption{QML model hyperparameters.}
+\begin{tabular}{ll}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Qubits & 9 \\
+Re-uploading layers $L$ & [TO BE FILLED] \\
+Optimizer & Adam \\
+Learning rate & [TO BE FILLED] \\
+Batch size & [TO BE FILLED] \\
+Epochs & [TO BE FILLED] \\
+Loss function & Weighted MSE (fire rows: $10\times$ weight) \\
+Backend & PennyLane \texttt{default.qubit} simulator \\
+\bottomrule
+\end{tabular}
+\label{tab:qml_config}
+\end{table}
+
+\subsection{Resource Requirements}
+
+\begin{table}[H]
+\centering
+\caption{Quantum resource estimates.}
+\begin{tabular}{ll}
+\toprule
+\textbf{Resource} & \textbf{Value} \\
+\midrule
+Number of qubits & 9 \\
+Circuit depth (per layer) & $\sim$27 gates ($9 R_y$ + $9$ CNOT + $9 R_y R_z$) \\
+Total trainable parameters & $18 \times L$ \\
+Shots (if sampling) & [TO BE FILLED] \\
+Estimated wall-clock time (simulator) & [TO BE FILLED] \\
+\bottomrule
+\end{tabular}
+\label{tab:resources}
+\end{table}
+
+\subsection{QML Results}
+\label{sec:qml_results}
+
+[TO BE FILLED after QML training is complete. Include: val/test MAE, RMSE,
+Precision, Recall, F1, AUC-ROC using the same metrics as the classical
+benchmark in Section~\ref{sec:classical}.]
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Task 1B: Classical Benchmark and Comparison}
+\label{sec:classical}
+
+\subsection{Experimental Setup}
+
+\paragraph{Temporal split.}
+To prevent data leakage, a strict chronological split was applied:
+
+\begin{table}[H]
+\centering
+\caption{Train / validate / test split.}
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Split} & \textbf{Years} & \textbf{Rows} & \textbf{Fire rows} & \textbf{Fire rate} \\
+\midrule
+Train      & 2018--2020 & 93,348 & 1,026 & 1.10\% \\
+Validate   & 2021       & 31,116 & 336   & 1.08\% \\
+Test       & 2022       & 31,116 & 256   & 0.82\% \\
+\midrule
+\textbf{Total} & 2018--2022 & \textbf{155,580} & \textbf{1,618} & \textbf{1.04\%} \\
+\bottomrule
+\end{tabular}
+\label{tab:split}
+\end{table}
+
+\paragraph{Sample weighting.}
+To address the 99:1 class imbalance (Section~\ref{sec:imbalance}),
+fire observations ($n_{\text{fires}} > 0$) were assigned a training sample
+weight of 10 relative to no-fire observations.
+
+\paragraph{Models.}
+Five classical models were evaluated on identical features and splits:
+(1)~Dummy Regressor (always predict zero, i.e., the na\"{i}ve baseline);
+(2)~Ridge Regression; (3)~Random Forest (300 trees);
+(4)~Gradient Boosting (300 estimators); (5)~XGBoost (300 estimators).
+
+\paragraph{Metrics.}
+All models are evaluated on the $\log(1 + n)$-scale predictions converted
+back to the original \texttt{num\_fires} scale. Binary fire detection is
+assessed at threshold $\hat{n} > 0.5$. Metrics reported:
+Mean Absolute Error (MAE), Root Mean Squared Error (RMSE),
+$R^2$, Precision, Recall, F1, and AUC-ROC.
+
+\subsection{Validation Results}
+
+\begin{table}[H]
+\centering
+\caption{Validation set (2021) results for all classical models.
+         Best values per column in \textbf{bold}.}
+\begin{tabular}{lrrrrrrr}
+\toprule
+\textbf{Model} & \textbf{MAE} & \textbf{RMSE} & \textbf{$R^2$} &
+\textbf{Prec.} & \textbf{Recall} & \textbf{F1} & \textbf{AUC-ROC} \\
+\midrule
+Dummy (predict 0)  & \textbf{0.0124} & \textbf{0.1288} & $-$0.009 & 0.000 & 0.000 & 0.000 & 0.500 \\
+Ridge Regression   & 0.0949 & 0.1584 & $-$0.527 & 0.000 & 0.000 & 0.000 & 0.728 \\
+Random Forest      & 0.0511 & 0.1439 & $-$0.261 & 0.161 & 0.092 & 0.117 & 0.829 \\
+XGBoost            & 0.0684 & 0.1569 & $-$0.499 & 0.177 & 0.158 & 0.167 & 0.820 \\
+Gradient Boosting  & 0.0694 & 0.1549 & $-$0.460 & 0.163 & 0.131 & 0.145 & \textbf{0.837} \\
+\bottomrule
+\end{tabular}
+\label{tab:val_results}
+\end{table}
+
+\subsection{Best Model: Test Set Results}
+
+Gradient Boosting achieved the highest validation AUC-ROC and was
+evaluated on the held-out 2022 test set (Table~\ref{tab:test_results}).
+
+\begin{table}[H]
+\centering
+\caption{Gradient Boosting performance on the 2022 test set.}
+\begin{tabular}{lr}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+MAE          & 0.0645 \\
+RMSE         & 0.1426 \\
+$R^2$        & $-$0.527 \\
+Precision    & 0.242 \\
+Recall       & 0.258 \\
+F1           & 0.250 \\
+\textbf{AUC-ROC} & \textbf{0.873} \\
+Fire sensitivity     & 25.8\% \\
+No-fire specificity  & 99.3\% \\
+\bottomrule
+\end{tabular}
+\label{tab:test_results}
+\end{table}
+
+\subsection{Interpretation of Metrics}
+
+\paragraph{Why $R^2 < 0$?}
+A negative $R^2$ does not indicate a model worse than a random predictor.
+For zero-inflated data, $R^2$ compares the model to the global mean
+prediction; since the global mean is non-zero but most true values are
+exactly zero, any model that correctly predicts mostly zeros will have
+low or negative $R^2$. AUC-ROC is the appropriate primary metric here
+because it measures \emph{ranking quality}: whether fire ZIP-months
+are scored higher than no-fire ZIP-months regardless of the absolute
+prediction scale.
+
+\paragraph{AUC-ROC of 0.873.}
+This means that if one fire ZIP-month and one no-fire ZIP-month are drawn
+at random, the Gradient Boosting model ranks the fire ZIP-month higher
+with 87.3\% probability. This is a strong discriminative signal for
+insurance pricing applications.
+
+\paragraph{Low F1 is structural.}
+With a 1\% base rate, a threshold of $\hat{n} > 0.5$ yields low F1 regardless
+of model quality. For insurance applications, the model output is used as
+a continuous risk score (not a hard binary), so F1 is less relevant than
+AUC-ROC and the calibration of the continuous score.
+
+\subsection{2023 Risk Score Generation}
+
+Monthly fire predictions for all 2,593 ZIP codes across all 12 months of
+2023 were generated using historical ZIP$\times$month averages as synthetic
+2023 features (since 2023 climate observations are not available in the
+provided dataset). The annual risk score for each ZIP code is:
+\begin{equation}
+    \text{RiskScore}_{z} = \sum_{m=1}^{12} \hat{n}_{z,m}
+    \label{eq:risk}
+\end{equation}
+Table~\ref{tab:top10} shows the ten highest-risk ZIP codes for 2023.
+
+\begin{table}[H]
+\centering
+\caption{Top 10 highest-risk ZIP codes for 2023 (Gradient Boosting model).}
+\begin{tabular}{rrl}
+\toprule
+\textbf{ZIP} & \textbf{Annual Risk Score} & \textbf{Region} \\
+\midrule
+93453 & 13.52 & Santa Maria / SLO County \\
+93461 & 13.20 & Paso Robles area \\
+93446 & 9.30  & Paso Robles \\
+93210 & 8.99  & Coalinga / Fresno County \\
+96130 & 7.31  & Lassen County (Northern CA) \\
+93001 & 6.71  & Ventura County \\
+93426 & 6.60  & Monterey County \\
+93280 & 6.31  & Wasco / Kern County \\
+96064 & 6.28  & Siskiyou County (Northern CA) \\
+93432 & 6.13  & Arroyo Grande area \\
+\bottomrule
+\end{tabular}
+\label{tab:top10}
+\end{table}
+
+The predicted high-risk ZIP codes align geographically with California's
+historically fire-prone regions: the Central Coast (San Luis Obispo and
+Santa Barbara counties), the Central Valley interface, and Northern California
+mountain counties, providing face validity for the model.
+
+\subsection{QML vs.\ Classical Comparison}
+\label{sec:comparison}
+
+[TO BE FILLED after QML model is trained. Structure: side-by-side table of
+all metrics for best classical (Gradient Boosting) vs.\ QML model on the
+2022 test set. Discuss: (1) whether QML improves AUC-ROC or recall;
+(2) trade-off between performance and circuit depth/training cost;
+(3) advantages of the quantum feature map for capturing non-linear
+feature interactions.]
+
+\paragraph{Advantages of the QML approach (anticipated).}
+\begin{itemize}[leftmargin=*]
+    \item The quantum feature map embeds 9-dimensional input into a
+          $2^9 = 512$-dimensional Hilbert space, enabling non-linear
+          decision boundaries that are exponentially costly to reproduce
+          classically.
+    \item Entangling gates between climate feature pairs (e.g.,
+          temperature--dryness, lat--lon) explicitly model the
+          interdependencies described in the challenge statement.
+    \item As the number of relevant features grows with climate complexity,
+          QML circuits scale more efficiently in expressivity per parameter
+          than classical polynomial feature expansions.
+\end{itemize}
+
+\paragraph{Disadvantages of the QML approach.}
+\begin{itemize}[leftmargin=*]
+    \item Training is significantly slower than classical models on current
+          simulators (no hardware acceleration for gradient computation).
+    \item Barren plateaus in the parameter landscape can impede convergence
+          for deep circuits.
+    \item Current quantum hardware introduces gate noise that degrades
+          prediction quality; results on real devices may underperform
+          the noise-free simulator.
+    \item The 1\% fire rate makes gradient signals sparse during training,
+          which is exacerbated by the shot noise inherent to quantum
+          measurement.
+\end{itemize}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Task 2: Insurance Premium Modeling}
+\label{sec:task2}
+
+[TO BE FILLED. The annual risk scores from Equation~\eqref{eq:risk} feed
+directly into a time series model predicting 2021 premiums from 2018--2020
+data. Use \texttt{annual\_risk\_scores\_2023.csv} as the fire risk input
+column alongside the insurance dataset.]
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Conclusions}
+\label{sec:conclusions}
+
+We have developed a complete data pipeline, feature engineering framework,
+and classical benchmark for California wildfire risk prediction.
+The cleaned dataset covers 2,593 ZIP codes across 2018--2022 with no
+missing values in any modeled feature. The Gradient Boosting classical model
+achieves an AUC-ROC of 0.873 on the 2022 held-out test set, providing a
+strong benchmark for the QML model to be compared against.
+
+The 9-qubit VQC with angle encoding and data re-uploading is designed to
+operate within the circuit budget of current simulators (AWS Braket,
+IBM Quantum) while providing the expressivity needed to capture the
+non-linear interactions between climate, geography, and historical fire
+patterns. The annual risk scores produced by both models are structured
+for direct ingestion by the Task~2 insurance premium model.
+
+% ── References ────────────────────────────────────────────────────────────────
+\begin{thebibliography}{9}
+
+\bibitem{perez2020reup}
+A.~P\'{e}rez-Salinas, A.~Cervera-Lierta, E.~Gil-Fuster, and J.~I.~Latorre,
+``Data re-uploading for a universal quantum classifier,''
+\textit{Quantum}, vol.~4, p.~226, 2020.
+\href{https://doi.org/10.22331/q-2020-02-06-226}{doi:10.22331/q-2020-02-06-226}
+
+\bibitem{cerezo2021vqe}
+M.~Cerezo et al.,
+``Variational quantum algorithms,''
+\textit{Nature Reviews Physics}, vol.~3, pp.~625--644, 2021.
+
+\bibitem{schuld2021supervised}
+M.~Schuld and N.~Killoran,
+``Quantum machine learning in feature Hilbert spaces,''
+\textit{Physical Review Letters}, vol.~122, no.~4, p.~040504, 2019.
+
+\bibitem{wri2025fires}
+J.~MacCarthy et al.,
+``The Latest Data Confirms: Forest Fires Are Getting Worse,''
+World Resources Institute, July 2025.
+\url{https://www.wri.org/insights/global-trends-forest-fires}
+
+\end{thebibliography}
+
+\end{document}
