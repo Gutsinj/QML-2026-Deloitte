@@ -1,0 +1,13 @@
+# prints ALL trainable parameters (names + full tensors)
+
+for name, p in binary_model.named_parameters():
+    if p.requires_grad:
+        print(name)
+        print(p.detach().cpu())
+        print()
+
+for name, p in pos_model.named_parameters():
+    if p.requires_grad:
+        print(name)
+        print(p.detach().cpu())
+        print()
