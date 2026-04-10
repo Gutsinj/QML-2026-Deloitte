@@ -1,0 +1,28 @@
+Task 2 — Ridge Regression 2021 Insurance Premium Rate Prediction
+=================================================================
+
+Model      : Ridge Regression (alpha=255.9548, 5-fold CV)
+Target     : log(Earned Premium / Earned Exposure)
+Train      : 2019-2020  (3,887 ZIP-year rows)
+Test       : 2021       (1,977 ZIP-year rows)
+Features   : 14
+
+MAE              = $791.23 per exposure unit
+RMSE             = $20,626.01 per exposure unit
+R2 (log scale)   = 0.6666
+Median APE       = 21.61%
+% within 10%     = 13.1%
+% within 20%     = 43.9%
+
+Fire risk sensitivity:
+  10th pct  risk=0.345  predicted=$516  (-4.3% vs median)
+  50th pct  risk=0.707  predicted=$539  (+0.0% vs median)
+  90th pct  risk=2.354  predicted=$657  (+21.9% vs median)
+
+Top 5 ZIPs by predicted rate:
+  ZIP  predicted_rate_2021  actual_rate_2021  pct_error
+90264        949951.792392      33983.000000    2695.37
+94914         46074.387727       9952.000000     362.97
+93435          5727.189136      12918.000000     -55.67
+92023          4320.134375       3106.000000      39.09
+93920          3842.662097       6054.478261     -36.53

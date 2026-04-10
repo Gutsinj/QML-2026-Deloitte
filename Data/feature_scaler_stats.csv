@@ -1,0 +1,10 @@
+feature,min,max
+month_sin,-1.0,1.0
+month_cos,-1.0,1.0
+year,2018.0,2022.0
+avg_tmax_c,-14.91785714,44.7137931
+temp_range,0.0,26.62333333
+tot_prcp_mm,0.0,366.7
+dryness_3m_avg,-1.0587664651,43.44338418333333
+latitude,32.5626,41.9404
+longitude,-124.2514,-114.143

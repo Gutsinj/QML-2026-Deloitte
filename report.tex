@@ -39,10 +39,10 @@
     \large 2026 Quantum Sustainability Challenge Submission
 }
 \author{
-    \textbf{[YOUR NAME(S)]} \\
+    \textbf{Ethan Abelev, Jacob Gutsin} \\
     Team: HopkinsQ \\{}
     Johns Hopkins University \\{}
-    \texttt{[EMAIL ADDRESS]}
+    \texttt{eabelev1@jh.edu, jgutsin1@jh.edu}
 }
 \date{}
 
@@ -84,7 +84,7 @@ training-data disparity rather than circuit expressivity, and discuss how
 fault-tolerant quantum hardware would close this gap.
 
 Our data pipeline, feature engineering, and complete model code are
-available at: \href{https://github.com/[YOUR-REPO]}{github.com/[YOUR-REPO]}.
+available at: \href{https://github.com/Gutsinj/QML-2026-Deloitte}{https://github.com/Gutsinj/QML-2026-Deloitte}.
 \end{abstract}
 
 \tableofcontents
@@ -855,22 +855,77 @@ Two representative locations were evaluated:
           reflecting the higher baseline risk in Northern California.
 \end{itemize}
 
-\paragraph{Temporal autocorrelation (PACF analysis).}
+\paragraph{Temporal autocorrelation and \texttt{auto.arima} model selection.}
 To determine whether the monthly QML risk predictions contain exploitable
-temporal autocorrelation---i.e., whether past-month predictions are predictive
-of future predictions---a Partial Autocorrelation Function (PACF) analysis was
-conducted in R using the \texttt{TSA} package (\texttt{QML.R}). The PACF of
-Series~2 (\texttt{lat\_lon\_timeseries\_2.csv}) showed no statistically
-significant lags beyond lag~0. This indicates that the QML model's monthly
-output is \textbf{temporally uncorrelated}: the fire risk prediction for any
-given month is not significantly predicted by predictions in prior months.
+temporal structure, a full SARIMA model-selection procedure was conducted in R
+using the \texttt{TSA} and \texttt{forecast} packages (\texttt{QML.R}).
+The ACF, PACF, and \texttt{forecast::auto.arima} (exhaustive search,
+\texttt{stepwise = FALSE}) were applied to the back-transformed Series~2.
 
-This finding has an important implication for premium modeling: the fire risk
-signal is better treated as a \emph{level} (snapshot of cross-sectional risk
-per ZIP) rather than a \emph{trend} requiring ARIMA-style lag modeling. The
-moderate upward drift visible in premium rates (Table~\ref{tab:rate_stats})
-is therefore attributed to macroeconomic inflation and portfolio growth rather
-than a QML-detectable deterioration in the fire risk signal itself.
+\texttt{auto.arima} selected \textbf{ARIMA(0,0,1) with non-zero mean} as
+the best model across all candidate SARIMA specifications (lowest AIC):
+
+\begin{table}[H]
+\centering
+\caption{ARIMA model selected by \texttt{auto.arima} for the Northern California
+         QML fire risk time series (Series~2, $n = 60$ monthly observations).}
+\begin{tabular}{lr}
+\toprule
+\textbf{Component} & \textbf{Value} \\
+\midrule
+Selected model          & ARIMA(0,0,1) with non-zero mean \\
+MA(1) coefficient       & $-0.347$ (s.e.\ $= 0.145$) \\
+Series mean             & $0.3225$ \\
+$\sigma^2$              & $3.07 \times 10^{-5}$ \\
+AIC                     & $-449.17$ \\
+Ljung-Box $p$-value     & $0.17$ (12 lags; residuals are white noise) \\
+Training RMSE           & $0.00544$ \\
+Training MAPE           & $1.26\%$ \\
+\bottomrule
+\end{tabular}
+\label{tab:arima_fit}
+\end{table}
+
+Three structural conclusions follow directly from this result:
+
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{No autoregressive structure ($p = 0$).} No AR lags were
+          selected, confirming the PACF finding: past fire risk values do not
+          predict future values.
+    \item \textbf{No differencing ($d = 0$).} The series is stationary in
+          levels; there is no persistent upward or downward trend in the QML
+          fire risk output over the 2018--2022 period.
+    \item \textbf{MA(1) only.} The sole temporal structure is a single
+          negative moving-average shock ($\theta_1 = -0.347$): a one-month
+          upward spike in predicted risk is partially reversed the following
+          month, after which the series reverts to its mean. The 12-month
+          \texttt{forecast} collapses to the constant mean after the first
+          step, producing a flat prediction horizon.
+\end{enumerate}
+
+\paragraph{Scalability to all 2,593 ZIP codes.}
+While the ARIMA analysis above was performed on two representative locations,
+the same pipeline scales directly to the full set of California ZIP codes.
+The QML model (qml\_5/qml\_6) generates a 60-month fire risk time series for
+any given latitude and longitude by fixing the geographic features and sweeping
+over all months. Running \texttt{auto.arima} on each of the 2,593 ZIP code
+series---using each ZIP's geocoded coordinates---produces a ZIP-specific
+ARIMA order and mean level. In the ARIMAX premium model (\texttt{task2\_arimax.py}),
+this was operationalized across \textbf{2,017 ZIP codes} in a single pipeline
+run: 608 ZIPs (30\%) received a full ARIMAX(1,0,0) fit; the remainder used
+AR(1) or drift fallbacks where training observations were insufficient.
+The scalability of the QML time series generation step is the key enabler:
+each series requires only one forward pass per month through the trained
+quantum circuit, making the full-ZIP sweep feasible on a standard laptop
+in minutes using the statevector simulator.
+
+This finding has an important implication for premium modeling: the QML fire
+risk signal is best treated as a \emph{level} (cross-sectional risk ranking per
+ZIP) rather than a \emph{trend}, since the ARIMA(0,0,1) structure implies no
+exploitable multi-step forecast horizon. The moderate upward drift in statewide
+premium rates (Table~\ref{tab:rate_stats}) is therefore attributed to
+macroeconomic inflation and portfolio growth rather than a QML-detectable
+escalation in fire risk over this window.
 
 \subsection{Premium Prediction Model}
 \label{sec:premium_model}
@@ -907,11 +962,16 @@ The following features were used to predict the 2021 premium rate:
 Given the PACF finding that temporal autocorrelation in the QML risk signal
 is negligible, the premium model is formulated as a \textbf{panel regression
 with a lagged dependent variable} rather than a pure time series model.
-Gradient Boosting was selected as the estimator (consistent with Task~1B),
-enabling non-linear interactions between fire risk, coverage amounts, and
-geographic variables. The model is trained on the log-transformed rate
-$\log(r_{z,t})$ to stabilize variance across ZIP codes with widely different
-premium levels.
+\textbf{Ridge Regression} (implemented in \texttt{task2\_premium\_prediction.py})
+was selected as the estimator: it produces interpretable signed coefficients
+for each feature, handles multicollinearity between correlated insurance
+variables (coverage amount, housing value, income), and provides a
+transparent linear baseline against which future QML-enhanced models
+can be compared.
+The regularization strength $\alpha = 255.95$ was selected via 5-fold
+cross-validation on the training set.
+The model is trained on the log-transformed rate $\log(r_{z,t})$ to
+stabilize variance across ZIP codes with widely different premium levels.
 
 \subsection{Integration of QML Risk Scores}
 
@@ -958,11 +1018,12 @@ rather than \emph{temporal forecasting} of risk escalation.
 \toprule
 \textbf{Metric} & \textbf{Value} & \textbf{Notes} \\
 \midrule
-MAE (\$/exposure)     & \mbox{[FILL]} & Mean absolute error on rate \\
-RMSE (\$/exposure)    & \mbox{[FILL]} & Root mean squared error on rate \\
-$R^2$                 & \mbox{[FILL]} & Explained variance on log-rate \\
-Median APE (\%)       & \mbox{[FILL]} & Median absolute percentage error \\
-\% ZIPs within 10\%   & \mbox{[FILL]} & Share of ZIPs predicted within 10\% of actual \\
+MAE (\$/exposure)     & \$791    & Mean absolute error on rate \\
+RMSE (\$/exposure)    & \$20,626 & Driven by high-premium outlier ZIPs \\
+$R^2$                 & 0.667    & Explained variance on log-rate \\
+Median APE (\%)       & 21.6\%   & Median absolute percentage error \\
+\% ZIPs within 10\%   & 13.1\%   & Share of ZIPs predicted within 10\% of actual \\
+\% ZIPs within 20\%   & 43.9\%   & Share of ZIPs predicted within 20\% of actual \\
 \bottomrule
 \end{tabular}
 \label{tab:task2_metrics}
@@ -976,23 +1037,31 @@ Median APE (\%)       & \mbox{[FILL]} & Median absolute percentage error \\
          increases from 2020 to 2021, ranked by predicted rate change.}
 \begin{tabular}{rlrrr}
 \toprule
-\textbf{ZIP} & \textbf{Region} & \textbf{Predicted 2021 (\$)} & \textbf{Actual 2021 (\$)} & \textbf{QML Risk Score} \\
+\textbf{ZIP} & \textbf{Region} & \textbf{Predicted 2021 (\$)} & \textbf{Actual 2021 (\$)} & \textbf{Fire Risk Score} \\
 \midrule
-\mbox{[FILL]} & \mbox{[FILL]} & \mbox{[FILL]} & \mbox{[FILL]} & \mbox{[FILL]} \\
-\mbox{[FILL]} & \mbox{[FILL]} & \mbox{[FILL]} & \mbox{[FILL]} & \mbox{[FILL]} \\
-\mbox{[FILL]} & \mbox{[FILL]} & \mbox{[FILL]} & \mbox{[FILL]} & \mbox{[FILL]} \\
-\mbox{[FILL]} & \mbox{[FILL]} & \mbox{[FILL]} & \mbox{[FILL]} & \mbox{[FILL]} \\
-\mbox{[FILL]} & \mbox{[FILL]} & \mbox{[FILL]} & \mbox{[FILL]} & \mbox{[FILL]} \\
+90264 & Malibu, Los Angeles Co.     & 949,952 & 33,983 & 2.00 \\
+94914 & Kentfield, Marin Co.        &  46,074 &  9,952 & 1.73 \\
+93435 & Los Alamos, Santa Barbara   &   5,727 & 12,918 & 1.82 \\
+92023 & Encinitas, San Diego Co.    &   4,320 &  3,106 & 2.00 \\
+93920 & Big Sur, Monterey Co.       &   3,843 &  6,054 & 2.43 \\
 \bottomrule
 \end{tabular}
 \label{tab:task2_top_zips}
 \end{table}
 
+\paragraph{Ridge coefficient interpretation.}
+The largest positive coefficients are on \texttt{lag\_log\_rate} ($+0.387$)
+and \texttt{cov\_a} ($+0.135$), confirming that the prior-year premium and
+dwelling coverage amount are the dominant drivers of the 2021 rate.
+The QML risk score coefficient ($+0.013$) and the dataset fire risk coefficient
+($+0.100$) are both positive and meaningful: a one standard-deviation increase
+in fire risk raises the predicted log-rate, translating to the sensitivity
+shown below.
+
 \paragraph{Fire-risk premium sensitivity.}
-To quantify the impact of QML fire risk on predicted premiums, the marginal
-effect of the qml\_3 risk score on the predicted 2021 rate was computed by
-holding all other features at their ZIP-level 2020 values and varying the
-risk score from its 10th to 90th percentile across all ZIP codes:
+To quantify the marginal effect of fire risk on predicted premiums, all other
+features were held at the test-set mean and the \texttt{fire\_risk} score
+was varied across its 10th, 50th, and 90th percentiles:
 
 \begin{table}[H]
 \centering
@@ -1002,9 +1071,9 @@ risk score from its 10th to 90th percentile across all ZIP codes:
 \toprule
 \textbf{Risk score percentile} & \textbf{Predicted rate (\$/exposure)} & \textbf{vs.\ median (\%)} \\
 \midrule
-10th pct (low risk)    & \mbox{[FILL]} & \mbox{[FILL]} \\
-50th pct (median risk) & \mbox{[FILL]} & --- \\
-90th pct (high risk)   & \mbox{[FILL]} & \mbox{[FILL]} \\
+10th pct (risk $= 0.345$, low)    & \$516 & $-4.3\%$ \\
+50th pct (risk $= 0.707$, median) & \$539 & ---      \\
+90th pct (risk $= 2.354$, high)   & \$657 & $+21.9\%$ \\
 \bottomrule
 \end{tabular}
 \label{tab:task2_sensitivity}
