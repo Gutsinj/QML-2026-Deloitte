@@ -1,8 +1,8 @@
 # QML-2026-Deloitte
 We present a hybrid Quantum Machine Learning (QML) framework for wildfire risk
 modeling across 2,593 California ZIP codes using historical climate and fire data
-spanning 2018--2022, addressing Task~1 (fire risk prediction for 2023) and
-Task~2 (insurance premium forecasting). Wildfire prediction is formulated as a
+spanning 2018--2022, addressing Task 1 (fire risk prediction for 2023) and
+Task 2 (insurance premium forecasting). Wildfire prediction is formulated as a
 zero-inflated count regression problem: predicting the expected number of fire
 events per ZIP code per month.
 
